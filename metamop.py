@@ -20,11 +20,22 @@ from PIL import Image, ExifTags, UnidentifiedImageError
 APP_NAME = "MetaMop"
 VERSION = "0.1.0"
 ISSUES_URL = "https://github.com/BenFreedomWalker/metamop/issues"
-IMAGE_FORMATS = {".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff"}
-VIDEO_FORMATS = {".mp4", ".mov", ".3gp", ".3g2"}
+# ExifTool formats with write support. Read-only formats are deliberately
+# excluded so the queue only offers files MetaMop can actually clean.
+IMAGE_FORMATS = {
+    ".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff",
+    ".gif", ".avif", ".heic", ".heif", ".jp2", ".jxl",
+}
+PIL_IMAGE_FORMATS = {".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff"}
+VIDEO_FORMATS = {".mp4", ".m4v", ".mov", ".3gp", ".3g2"}
+AUDIO_FORMATS = {".m4a", ".aax"}
+VECTOR_FORMATS = {".ai", ".eps", ".ps"}
 PDF_FORMATS = {".pdf"}
-SUPPORTED = IMAGE_FORMATS | VIDEO_FORMATS | PDF_FORMATS
-SUPPORTED_FILTER = "*.jpg *.jpeg *.png *.webp *.tif *.tiff *.mp4 *.mov *.3gp *.3g2 *.pdf"
+SUPPORTED = IMAGE_FORMATS | VIDEO_FORMATS | AUDIO_FORMATS | VECTOR_FORMATS | PDF_FORMATS
+SUPPORTED_FILTER = (
+    "*.jpg *.jpeg *.png *.webp *.tif *.tiff *.gif *.avif *.heic *.heif *.jp2 *.jxl "
+    "*.mp4 *.m4v *.mov *.3gp *.3g2 *.m4a *.aax *.ai *.eps *.ps *.pdf"
+)
 EXIF_NAMES = ExifTags.TAGS
 
 
@@ -152,7 +163,7 @@ def inspect_with_exiftool(path: Path) -> list[tuple[str, str]]:
 
 def inspect_file(path: Path) -> list[tuple[str, str]]:
     """Inspect metadata using the appropriate reader for the file type."""
-    return inspect_image(path) if path.suffix.lower() in IMAGE_FORMATS else inspect_with_exiftool(path)
+    return inspect_image(path) if path.suffix.lower() in PIL_IMAGE_FORMATS else inspect_with_exiftool(path)
 
 
 def clean_file(source: Path, output_dir: Path | None = None) -> Path:
@@ -175,8 +186,8 @@ def clean_file(source: Path, output_dir: Path | None = None) -> Path:
         destination_dir, f"{source.stem}_metamop{source.suffix}"
     )
 
-    # Preserve image color profiles/orientation. For audio and video, remove
-    # container tags directly; streams are not transcoded.
+    # Preserve image color profiles/orientation. ExifTool edits supported
+    # media containers directly; audio/video streams are not transcoded.
     if suffix in IMAGE_FORMATS:
         command = [
             exiftool, "-all=", "-CommonIFD0=", "--icc_profile:all",
@@ -380,7 +391,7 @@ class MetaMopApp:
         try:
             metadata = inspect_file(path)
             content = "\n".join(f"{key}\n  {value}" for key, value in metadata)
-        except (OSError, UnidentifiedImageError, ValueError) as exc:
+        except (OSError, UnidentifiedImageError, ValueError, RuntimeError) as exc:
             content = f"Could not inspect this file.\n\n{exc}"
         self.details.configure(state="normal")
         self.details.delete("1.0", "end")
@@ -419,7 +430,7 @@ class MetaMopApp:
 
     def clean_all(self) -> None:
         if not self.files:
-            messagebox.showinfo(APP_NAME, "Add some images first.")
+            messagebox.showinfo(APP_NAME, "Add some supported files first.")
             return
         self._clean_paths(list(self.files))
 
