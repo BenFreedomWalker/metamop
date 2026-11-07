@@ -21,11 +21,10 @@ APP_NAME = "MetaMop"
 VERSION = "0.1.0"
 ISSUES_URL = "https://github.com/BenFreedomWalker/metamop/issues"
 IMAGE_FORMATS = {".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff"}
-AUDIO_FORMATS = {".mp3", ".flac", ".wav", ".ogg", ".oga", ".m4a", ".aac", ".wma", ".aiff", ".ape"}
-VIDEO_FORMATS = {".mp4", ".m4v", ".mov", ".avi", ".mkv", ".webm", ".wmv", ".3gp", ".mpg", ".mpeg", ".mts", ".m2ts"}
+VIDEO_FORMATS = {".mp4", ".mov", ".3gp", ".3g2"}
 PDF_FORMATS = {".pdf"}
-SUPPORTED = IMAGE_FORMATS | AUDIO_FORMATS | VIDEO_FORMATS | PDF_FORMATS
-SUPPORTED_FILTER = "*.jpg *.jpeg *.png *.webp *.tif *.tiff *.mp3 *.flac *.wav *.ogg *.oga *.m4a *.aac *.wma *.aiff *.ape *.mp4 *.m4v *.mov *.avi *.mkv *.webm *.wmv *.3gp *.mpg *.mpeg *.mts *.m2ts *.pdf"
+SUPPORTED = IMAGE_FORMATS | VIDEO_FORMATS | PDF_FORMATS
+SUPPORTED_FILTER = "*.jpg *.jpeg *.png *.webp *.tif *.tiff *.mp4 *.mov *.3gp *.3g2 *.pdf"
 EXIF_NAMES = ExifTags.TAGS
 
 
@@ -123,7 +122,7 @@ def find_qpdf() -> str | None:
 
 
 def inspect_with_exiftool(path: Path) -> list[tuple[str, str]]:
-    """Inspect metadata in audio, video, and PDF files using ExifTool."""
+    """Inspect metadata in video and PDF files using ExifTool."""
     exiftool = find_exiftool()
     if not exiftool:
         raise FileNotFoundError("ExifTool is required to inspect this file type.")
@@ -268,7 +267,7 @@ class MetaMopApp:
         ttk.Label(heading, text="MetaMop", style="Title.TLabel").pack(anchor="w")
         ttk.Label(
             heading,
-            text="Inspect and remove metadata from images, audio, video and PDFs — originals stay untouched.",
+            text="Inspect and remove metadata from images, supported videos and PDFs — originals stay untouched.",
             style="Muted.TLabel",
         ).pack(anchor="w", pady=(2, 0))
 
@@ -469,7 +468,7 @@ class MetaMopApp:
     def _about(self) -> None:
         messagebox.showinfo(
             f"About {APP_NAME}",
-            f"{APP_NAME} {VERSION}\n\nA lightweight, offline-first metadata cleaner for images, audio, video and PDFs.\n\n"
+            f"{APP_NAME} {VERSION}\n\nA lightweight, offline-first metadata cleaner for images, supported videos and PDFs.\n\n"
             "Copyright © 2026 BenFreedomWalker\n"
             "Licensed under GNU GPL-3.0-or-later.\n"
             "No warranty is provided. See LICENSE for details.",
