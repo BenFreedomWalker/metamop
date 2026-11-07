@@ -54,9 +54,9 @@ class CleanerTests(unittest.TestCase):
         self.assertEqual(result.name, "sample_1.bmp")
 
     def test_animated_images_are_skipped(self):
-        source = self.root / "animated.gif"
+        source = self.root / "multipage.tiff"
         frames = [Image.new("RGB", (4, 4), color) for color in ("red", "blue")]
-        frames[0].save(source, save_all=True, append_images=frames[1:], duration=100, loop=0)
+        frames[0].save(source, save_all=True, append_images=frames[1:])
 
         with self.assertRaisesRegex(ValueError, "Animated or multi-page"):
             clean_image(source, self.output)
