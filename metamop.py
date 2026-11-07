@@ -6,13 +6,15 @@ Licensed under the GNU General Public License v3.0 or later.
 from __future__ import annotations
 
 import os
+import shutil
+import subprocess
 import sys
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from typing import Any
 
-from PIL import Image, ImageOps, ExifTags, UnidentifiedImageError
+from PIL import Image, ExifTags, UnidentifiedImageError
 
 APP_NAME = "MetaMop"
 VERSION = "0.1.0"
@@ -77,120 +79,74 @@ def unique_destination(folder: Path, filename: str) -> Path:
         number += 1
 
 
-def strip_jpeg_metadata(source: Path, destination: Path) -> None:
-    """Remove JPEG metadata segments without re-encoding the image stream.
+EXIFTOOL_URL = "https://exiftool.org/"
 
-    JFIF, ICC color profiles, and Adobe color-transform information are kept.
-    EXIF/XMP (APP1), IPTC/Photoshop (APP13), and comments are removed.
-    """
-    data = source.read_bytes()
-    if len(data) < 4 or data[:2] != b"\xff\xd8":
-        raise ValueError("Invalid JPEG file: missing start marker.")
 
-    output = bytearray(data[:2])
-    pos = 2
-    kept_markers = {0xE0, 0xE2, 0xEE}  # JFIF, ICC profile, Adobe
-
-    while pos < len(data):
-        if data[pos] != 0xFF:
-            raise ValueError("Invalid JPEG structure before image data.")
-        marker_start = pos
-        while pos < len(data) and data[pos] == 0xFF:
-            pos += 1
-        if pos >= len(data):
-            raise ValueError("Truncated JPEG marker.")
-
-        marker = data[pos]
-        pos += 1
-
-        # Start of scan: the remaining bytes contain compressed image data.
-        if marker == 0xDA:
-            output.extend(data[marker_start:])
-            break
-
-        # Standalone markers have no length field.
-        if marker in {0x01, 0xD8, 0xD9, *range(0xD0, 0xD8)}:
-            output.extend(data[marker_start:pos])
-            if marker == 0xD9:
-                break
-            continue
-
-        if pos + 2 > len(data):
-            raise ValueError("Truncated JPEG segment length.")
-        segment_length = int.from_bytes(data[pos:pos + 2], "big")
-        segment_end = pos + segment_length
-        if segment_length < 2 or segment_end > len(data):
-            raise ValueError("Invalid or truncated JPEG segment.")
-
-        # Keep image structure and color-rendering data; discard metadata.
-        if marker not in {0xE1, 0xED, 0xFE} and (marker < 0xE0 or marker > 0xEF or marker in kept_markers):
-            output.extend(data[marker_start:segment_end])
-        pos = segment_end
-
-    if not output.endswith(b"\xff\xd9"):
-        raise ValueError("JPEG end marker was not found.")
-    destination.write_bytes(output)
+def find_exiftool() -> str | None:
+    """Find ExifTool on PATH or beside the application."""
+    found = shutil.which("exiftool") or shutil.which("exiftool.exe")
+    if found:
+        return found
+    candidates = [
+        Path(__file__).resolve().with_name("exiftool.exe"),
+        Path(__file__).resolve().with_name("exiftool"),
+        Path(sys.executable).resolve().parent / "exiftool.exe",
+        Path(sys.executable).resolve().parent / "exiftool",
+    ]
+    for candidate in candidates:
+        if candidate.is_file():
+            return str(candidate)
+    return None
 
 
 def clean_image(source: Path, output_dir: Path | None = None) -> Path:
-    """Write a metadata-light copy beside the source or in a chosen folder."""
+    """Remove image metadata with ExifTool without re-encoding image pixels."""
     suffix = source.suffix.lower()
     if suffix not in SUPPORTED:
         raise ValueError(f"Unsupported image type: {suffix or '(no extension)'}")
 
+    exiftool = find_exiftool()
+    if not exiftool:
+        raise FileNotFoundError(
+            "ExifTool was not found. Download the Windows executable from "
+            "https://exiftool.org/, rename it to exiftool.exe, and place it "
+            "beside metamop.py or add it to PATH."
+        )
+
     destination_dir = output_dir if output_dir is not None else source.parent
     destination_dir.mkdir(parents=True, exist_ok=True)
-    output_name = f"{source.stem}_metamop{source.suffix}"
-    destination = unique_destination(destination_dir, output_name)
+    destination = unique_destination(
+        destination_dir, f"{source.stem}_metamop{source.suffix}"
+    )
 
-    # For normally oriented JPEGs, strip metadata at the container level.
-    # This preserves the compressed image bit-for-bit and avoids quality loss.
-    if suffix in {".jpg", ".jpeg"}:
-        with Image.open(source) as probe:
-            if (probe.format or "").upper() in {"JPEG", "JPG"} and probe.getexif().get(274, 1) == 1:
-                strip_jpeg_metadata(source, destination)
-                return destination
-
-    with Image.open(source) as original:
-        if getattr(original, "n_frames", 1) > 1:
-            raise ValueError("Animated or multi-page images are not supported yet.")
-
-        # Apply EXIF orientation before discarding the orientation tag.
-        image = ImageOps.exif_transpose(original)
-        image.load()
-
-        # Keep the color profile so removing descriptive metadata does not
-        # unnecessarily change how colors are displayed.
-        save_options: dict[str, Any] = {}
-        icc = original.info.get("icc_profile")
-        dpi = original.info.get("dpi")
-        if icc:
-            save_options["icc_profile"] = icc
-        if dpi and suffix not in {".bmp"}:
-            save_options["dpi"] = dpi
-
-        fmt = (original.format or "").upper()
-        if fmt in {"JPEG", "JPG"}:
-            if image.mode not in {"RGB", "L", "CMYK"}:
-                image = image.convert("RGB")
-            # Fallback for JPEGs with EXIF rotation: orient pixels before
-            # removing the orientation tag. This requires re-encoding.
-            save_options.update(quality=95, subsampling=0, optimize=True)
-            image.save(destination, format="JPEG", **save_options)
-        elif fmt == "PNG":
-            image.save(destination, format="PNG", **save_options)
-        elif fmt == "WEBP":
-            save_options.update(lossless=True, method=6)
-            image.save(destination, format="WEBP", **save_options)
-        elif fmt in {"TIFF", "TIF"}:
-            image.save(destination, format="TIFF", **save_options)
-        elif fmt == "BMP":
-            if image.mode not in {"RGB", "RGBA"}:
-                image = image.convert("RGB")
-            image.save(destination, format="BMP")
-        else:
-            raise ValueError(f"Image format '{fmt or 'unknown'}' is not supported.")
-
+    # Keep ICC/color-space information and orientation so that colors and
+    # automatically rotated photos continue to display correctly. ExifTool
+    # edits metadata in the container; it does not decode/recompress pixels.
+    command = [
+        exiftool,
+        "-all=",
+        "--icc_profile:all",
+        "-tagsfromfile", "@",
+        "-colorspacetags",
+        "-orientation",
+        "-o", str(destination),
+        str(source),
+    ]
+    result = subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+    if result.returncode != 0 or not destination.is_file():
+        destination.unlink(missing_ok=True)
+        detail = (result.stderr or result.stdout).strip()
+        raise RuntimeError(detail or "ExifTool could not create the cleaned copy.")
+    if destination.stat().st_size == 0:
+        destination.unlink(missing_ok=True)
+        raise RuntimeError("ExifTool created an empty output file.")
     return destination
 
 
@@ -223,6 +179,7 @@ class MetaMopApp:
         menu = tk.Menu(self.root)
         help_menu = tk.Menu(menu, tearoff=False)
         help_menu.add_command(label="About MetaMop", command=self._about)
+        help_menu.add_command(label="Download ExifTool", command=self._open_exiftool)
         help_menu.add_command(label="Open issue tracker", command=self._open_issues)
         menu.add_cascade(label="Help", menu=help_menu)
         self.root.config(menu=menu)
@@ -401,10 +358,14 @@ class MetaMopApp:
             try:
                 destination = clean_image(path, output)
                 succeeded.append(destination)
+                before = path.stat().st_size
+                after = destination.stat().st_size
+                delta = after - before
+                size_note = f"{after / 1024:.1f} KB ({delta:+,} bytes)"
                 for item, row_path in self.rows.items():
                     if row_path == path:
                         values = list(self.tree.item(item, "values"))
-                        values[3] = "Cleaned"
+                        values[3] = f"Cleaned · {size_note}"
                         self.tree.item(item, values=values)
                         break
             except Exception as exc:
@@ -415,6 +376,15 @@ class MetaMopApp:
             summary = f"Created {len(succeeded)} clean copy/copies beside their original files."
         else:
             summary = f"Created {len(succeeded)} clean copy/copies in:\n{output}"
+        if succeeded:
+            size_lines = []
+            for destination in succeeded:
+                original = next((p for p in paths if p.stem == destination.stem.removesuffix("_metamop") and p.suffix.lower() == destination.suffix.lower()), None)
+                if original:
+                    change = destination.stat().st_size - original.stat().st_size
+                    size_lines.append(f"{destination.name}: {change:+,} bytes")
+            if size_lines:
+                summary += "\n\nSize change:\n" + "\n".join(size_lines[:8])
         if failures:
             summary += "\n\nCould not clean:\n" + "\n".join(failures[:8])
             if len(failures) > 8:
@@ -431,6 +401,10 @@ class MetaMopApp:
             "Licensed under GNU GPL-3.0-or-later.\n"
             "No warranty is provided. See LICENSE for details.",
         )
+
+    def _open_exiftool(self) -> None:
+        import webbrowser
+        webbrowser.open(EXIFTOOL_URL)
 
     def _open_issues(self) -> None:
         import webbrowser
