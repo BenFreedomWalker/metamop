@@ -97,6 +97,7 @@ def unique_destination(folder: Path, filename: str) -> Path:
 
 EXIFTOOL_URL = "https://exiftool.org/"
 QPDF_URL = "https://qpdf.sourceforge.io/"
+FFMPEG_URL = "https://ffmpeg.org/download.html"
 
 
 def find_exiftool() -> str | None:
@@ -130,6 +131,50 @@ def find_qpdf() -> str | None:
         if candidate.is_file():
             return str(candidate)
     return None
+
+def find_ffmpeg() -> str | None:
+    """Find FFmpeg on PATH or beside the application."""
+    found = shutil.which("ffmpeg") or shutil.which("ffmpeg.exe")
+    if found:
+        return found
+    for candidate in (
+        Path(__file__).resolve().with_name("ffmpeg.exe"),
+        Path(__file__).resolve().with_name("ffmpeg"),
+        Path(sys.executable).resolve().parent / "ffmpeg.exe",
+        Path(sys.executable).resolve().parent / "ffmpeg",
+    ):
+        if candidate.is_file():
+            return str(candidate)
+    return None
+
+
+def clean_m4a_with_ffmpeg(source: Path, destination: Path) -> None:
+    """Remux M4A without re-encoding when ExifTool cannot write its MP4 boxes."""
+    ffmpeg = find_ffmpeg()
+    if not ffmpeg:
+        raise FileNotFoundError(
+            "This M4A contains an MP4 sidx box that ExifTool cannot write. "
+            "Install FFmpeg, then put ffmpeg.exe beside metamop.py or add it "
+            "to PATH. Download: https://ffmpeg.org/download.html"
+        )
+    result = subprocess.run(
+        [
+            ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
+            "-i", str(source),
+            "-map", "0", "-c", "copy",
+            "-map_metadata", "-1", "-map_metadata:s", "-1",
+            "-map_chapters", "-1",
+            str(destination),
+        ],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        check=False,
+    )
+    if result.returncode != 0 or not destination.is_file():
+        destination.unlink(missing_ok=True)
+        raise RuntimeError(
+            (result.stderr or result.stdout).strip()
+            or "FFmpeg could not remux this M4A file."
+        )
 
 
 def inspect_with_exiftool(path: Path) -> list[tuple[str, str]]:
@@ -225,8 +270,14 @@ def clean_file(source: Path, output_dir: Path | None = None) -> Path:
         result = subprocess.run(command, capture_output=True, text=True,
                                 encoding="utf-8", errors="replace", check=False)
         if result.returncode != 0 or not destination.is_file():
+            error_text = (result.stderr or result.stdout).strip()
             destination.unlink(missing_ok=True)
-            raise RuntimeError((result.stderr or result.stdout).strip() or "ExifTool could not create the cleaned copy.")
+            # ExifTool currently cannot write MP4-family files containing
+            # Segment Index (sidx) boxes. FFmpeg remuxes the streams losslessly.
+            if suffix == ".m4a" and "sidx" in error_text.lower():
+                clean_m4a_with_ffmpeg(source, destination)
+            else:
+                raise RuntimeError(error_text or "ExifTool could not create the cleaned copy.")
 
     if destination.stat().st_size == 0:
         destination.unlink(missing_ok=True)
@@ -265,6 +316,7 @@ class MetaMopApp:
         help_menu.add_command(label="About MetaMop", command=self._about)
         help_menu.add_command(label="Download ExifTool", command=self._open_exiftool)
         help_menu.add_command(label="Download qpdf (PDF support)", command=self._open_qpdf)
+        help_menu.add_command(label="Download FFmpeg (M4A fallback)", command=self._open_ffmpeg)
         help_menu.add_command(label="Open issue tracker", command=self._open_issues)
         menu.add_cascade(label="Help", menu=help_menu)
         self.root.config(menu=menu)
@@ -492,6 +544,10 @@ class MetaMopApp:
     def _open_qpdf(self) -> None:
         import webbrowser
         webbrowser.open(QPDF_URL)
+
+    def _open_ffmpeg(self) -> None:
+        import webbrowser
+        webbrowser.open(FFMPEG_URL)
 
     def _open_issues(self) -> None:
         import webbrowser
