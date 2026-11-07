@@ -77,6 +77,61 @@ def unique_destination(folder: Path, filename: str) -> Path:
         number += 1
 
 
+def strip_jpeg_metadata(source: Path, destination: Path) -> None:
+    """Remove JPEG metadata segments without re-encoding the image stream.
+
+    JFIF, ICC color profiles, and Adobe color-transform information are kept.
+    EXIF/XMP (APP1), IPTC/Photoshop (APP13), and comments are removed.
+    """
+    data = source.read_bytes()
+    if len(data) < 4 or data[:2] != b"\\xff\\xd8":
+        raise ValueError("Invalid JPEG file: missing start marker.")
+
+    output = bytearray(data[:2])
+    pos = 2
+    kept_markers = {0xE0, 0xE2, 0xEE}  # JFIF, ICC profile, Adobe
+
+    while pos < len(data):
+        if data[pos] != 0xFF:
+            raise ValueError("Invalid JPEG structure before image data.")
+        marker_start = pos
+        while pos < len(data) and data[pos] == 0xFF:
+            pos += 1
+        if pos >= len(data):
+            raise ValueError("Truncated JPEG marker.")
+
+        marker = data[pos]
+        pos += 1
+
+        # Start of scan: the remaining bytes contain compressed image data.
+        if marker == 0xDA:
+            output.extend(data[marker_start:])
+            break
+
+        # Standalone markers have no length field.
+        if marker in {0x01, 0xD8, 0xD9, *range(0xD0, 0xD8)}:
+            output.extend(data[marker_start:pos])
+            if marker == 0xD9:
+                break
+            continue
+
+        if pos + 2 > len(data):
+            raise ValueError("Truncated JPEG segment length.")
+        segment_length = int.from_bytes(data[pos:pos + 2], "big")
+        segment_end = pos + segment_length
+        if segment_length < 2 or segment_end > len(data):
+            raise ValueError("Invalid or truncated JPEG segment.")
+
+        # Keep image structure and color-rendering data; discard metadata.
+        if marker not in {0xE1, 0xED, 0xFE} and (marker < 0xE0 or marker > 0xEF or marker in kept_markers):
+            output.extend(data[marker_start:segment_end])
+        pos = segment_end
+
+    if not output.endswith(b"\\xff\\xd9"):
+        raise ValueError("JPEG end marker was not found.")
+    destination.write_bytes(output)
+
+
 def clean_image(source: Path, output_dir: Path | None = None) -> Path:
     """Write a metadata-light copy beside the source or in a chosen folder."""
     suffix = source.suffix.lower()
@@ -87,6 +142,14 @@ def clean_image(source: Path, output_dir: Path | None = None) -> Path:
     destination_dir.mkdir(parents=True, exist_ok=True)
     output_name = f"{source.stem}_metamop{source.suffix}"
     destination = unique_destination(destination_dir, output_name)
+
+    # For normally oriented JPEGs, strip metadata at the container level.
+    # This preserves the compressed image bit-for-bit and avoids quality loss.
+    if suffix in {".jpg", ".jpeg"}:
+        with Image.open(source) as probe:
+            if (probe.format or "").upper() in {"JPEG", "JPG"} and probe.getexif().get(274, 1) == 1:
+                strip_jpeg_metadata(source, destination)
+                return destination
 
     with Image.open(source) as original:
         if getattr(original, "n_frames", 1) > 1:
@@ -110,8 +173,8 @@ def clean_image(source: Path, output_dir: Path | None = None) -> Path:
         if fmt in {"JPEG", "JPG"}:
             if image.mode not in {"RGB", "L", "CMYK"}:
                 image = image.convert("RGB")
-            # JPEG must be re-encoded to remove embedded metadata. Use high
-            # quality settings and preserve the ICC profile where present.
+            # Fallback for JPEGs with EXIF rotation: orient pixels before
+            # removing the orientation tag. This requires re-encoding.
             save_options.update(quality=95, subsampling=0, optimize=True)
             image.save(destination, format="JPEG", **save_options)
         elif fmt == "PNG":
