@@ -133,7 +133,7 @@ def find_qpdf() -> str | None:
 
 
 def inspect_with_exiftool(path: Path) -> list[tuple[str, str]]:
-    """Inspect metadata in video and PDF files using ExifTool."""
+    """Inspect metadata in formats not handled by Pillow using ExifTool."""
     exiftool = find_exiftool()
     if not exiftool:
         raise FileNotFoundError("ExifTool is required to inspect this file type.")
