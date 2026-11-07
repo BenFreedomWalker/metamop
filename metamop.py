@@ -84,7 +84,7 @@ def strip_jpeg_metadata(source: Path, destination: Path) -> None:
     EXIF/XMP (APP1), IPTC/Photoshop (APP13), and comments are removed.
     """
     data = source.read_bytes()
-    if len(data) < 4 or data[:2] != b"\\xff\\xd8":
+    if len(data) < 4 or data[:2] != b"\xff\xd8":
         raise ValueError("Invalid JPEG file: missing start marker.")
 
     output = bytearray(data[:2])
@@ -127,7 +127,7 @@ def strip_jpeg_metadata(source: Path, destination: Path) -> None:
             output.extend(data[marker_start:segment_end])
         pos = segment_end
 
-    if not output.endswith(b"\\xff\\xd9"):
+    if not output.endswith(b"\xff\xd9"):
         raise ValueError("JPEG end marker was not found.")
     destination.write_bytes(output)
 
