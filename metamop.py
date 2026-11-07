@@ -121,6 +121,8 @@ def clean_image(source: Path, output_dir: Path) -> Path:
         elif fmt in {"TIFF", "TIF"}:
             image.save(destination, format="TIFF", **save_options)
         elif fmt == "BMP":
+            if image.mode not in {"RGB", "RGBA"}:
+                image = image.convert("RGB")
             image.save(destination, format="BMP")
         else:
             raise ValueError(f"Image format '{fmt or 'unknown'}' is not supported.")
