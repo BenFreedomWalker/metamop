@@ -138,7 +138,7 @@ class MetaMopApp:
         self.root.geometry("980x620")
         self.root.minsize(760, 480)
         self.files: list[Path] = []
-        self.rows: dict[str, Path] = []
+        self.rows: dict[str, Path] = {}
 
         self._configure_style()
         self._build_menu()
