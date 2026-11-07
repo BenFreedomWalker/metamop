@@ -124,6 +124,7 @@ def clean_image(source: Path, output_dir: Path | None = None) -> Path:
     command = [
         exiftool,
         "-all=",
+        "-CommonIFD0=",
         "--icc_profile:all",
         "-tagsfromfile", "@",
         "-colorspacetags",
