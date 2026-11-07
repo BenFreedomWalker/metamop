@@ -5,7 +5,6 @@ Licensed under the GNU General Public License v3.0 or later.
 """
 from __future__ import annotations
 
-import os
 import shutil
 import subprocess
 import sys
@@ -19,7 +18,7 @@ from PIL import Image, ExifTags, UnidentifiedImageError
 APP_NAME = "MetaMop"
 VERSION = "0.1.0"
 ISSUES_URL = "https://github.com/BenFreedomWalker/metamop/issues"
-SUPPORTED = {".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff", ".bmp"}
+SUPPORTED = {".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff"}
 EXIF_NAMES = ExifTags.TAGS
 
 
@@ -256,7 +255,7 @@ class MetaMopApp:
     def add_files(self) -> None:
         chosen = filedialog.askopenfilenames(
             title="Add images",
-            filetypes=[("Supported images", "*.jpg *.jpeg *.png *.webp *.tif *.tiff *.bmp"),
+            filetypes=[("Supported images", "*.jpg *.jpeg *.png *.webp *.tif *.tiff"),
                        ("All files", "*.*")],
         )
         self._add_paths(Path(item) for item in chosen)
@@ -353,11 +352,12 @@ class MetaMopApp:
     def _clean_paths(self, paths: list[Path]) -> None:
         output_text = self.output_var.get().strip()
         output = Path(output_text).expanduser() if output_text else None
-        succeeded, failures = [], []
+        succeeded: list[tuple[Path, Path]] = []
+        failures: list[str] = []
         for path in paths:
             try:
                 destination = clean_image(path, output)
-                succeeded.append(destination)
+                succeeded.append((path, destination))
                 before = path.stat().st_size
                 after = destination.stat().st_size
                 delta = after - before
@@ -378,11 +378,9 @@ class MetaMopApp:
             summary = f"Created {len(succeeded)} clean copy/copies in:\n{output}"
         if succeeded:
             size_lines = []
-            for destination in succeeded:
-                original = next((p for p in paths if p.stem == destination.stem.removesuffix("_metamop") and p.suffix.lower() == destination.suffix.lower()), None)
-                if original:
-                    change = destination.stat().st_size - original.stat().st_size
-                    size_lines.append(f"{destination.name}: {change:+,} bytes")
+            for original, destination in succeeded:
+                change = destination.stat().st_size - original.stat().st_size
+                size_lines.append(f"{destination.name}: {change:+,} bytes")
             if size_lines:
                 summary += "\n\nSize change:\n" + "\n".join(size_lines[:8])
         if failures:
