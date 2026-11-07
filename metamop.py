@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """MetaMop - a small, offline-first metadata cleaner.
 
 Copyright (C) 2026 BenFreedomWalker
@@ -78,14 +77,16 @@ def unique_destination(folder: Path, filename: str) -> Path:
         number += 1
 
 
-def clean_image(source: Path, output_dir: Path) -> Path:
-    """Write a metadata-light copy, never modifying the original."""
+def clean_image(source: Path, output_dir: Path | None = None) -> Path:
+    """Write a metadata-light copy beside the source or in a chosen folder."""
     suffix = source.suffix.lower()
     if suffix not in SUPPORTED:
         raise ValueError(f"Unsupported image type: {suffix or '(no extension)'}")
 
-    output_dir.mkdir(parents=True, exist_ok=True)
-    destination = unique_destination(output_dir, source.name)
+    destination_dir = output_dir if output_dir is not None else source.parent
+    destination_dir.mkdir(parents=True, exist_ok=True)
+    output_name = f"{source.stem}_metamop{source.suffix}"
+    destination = unique_destination(destination_dir, output_name)
 
     with Image.open(source) as original:
         if getattr(original, "n_frames", 1) > 1:
@@ -218,8 +219,8 @@ class MetaMopApp:
         bottom.pack(fill="x", pady=(12, 0))
         output_row = ttk.Frame(bottom)
         output_row.pack(fill="x")
-        ttk.Label(output_row, text="Output folder:").pack(side="left")
-        self.output_var = tk.StringVar(value=str(Path.home() / "Pictures" / "MetaMop"))
+        ttk.Label(output_row, text="Output folder (optional):").pack(side="left")
+        self.output_var = tk.StringVar(value="")
         ttk.Entry(output_row, textvariable=self.output_var).pack(side="left", fill="x", expand=True, padx=7)
         ttk.Button(output_row, text="Browse…", command=self.choose_output).pack(side="left")
         action_row = ttk.Frame(bottom)
@@ -244,11 +245,15 @@ class MetaMopApp:
         folder = filedialog.askdirectory(title="Choose an image folder")
         if not folder:
             return
-        paths = (p for p in Path(folder).rglob("*") if p.is_file() and p.suffix.lower() in SUPPORTED)
+        paths = sorted(
+            (p for p in Path(folder).rglob("*") if p.is_file() and p.suffix.lower() in SUPPORTED),
+            key=lambda p: str(p).casefold(),
+        )
         self._add_paths(paths)
 
     def _add_paths(self, paths: Any) -> None:
         added = 0
+        first_added = None
         existing = set(self.files)
         for path in paths:
             path = Path(path)
@@ -263,7 +268,14 @@ class MetaMopApp:
                 size, status = "—", "Unavailable"
             item = self.tree.insert("", "end", values=(path.name, path.suffix[1:].upper(), size, status))
             self.rows[item] = path
+            if first_added is None:
+                first_added = item
             added += 1
+        if first_added is not None:
+            self.tree.selection_set(first_added)
+            self.tree.focus(first_added)
+            self.tree.see(first_added)
+            self._show_details()
         self.status_var.set(f"Added {added} file(s) · {len(self.files)} in queue")
 
     def _show_details(self, _event: object = None) -> None:
@@ -320,10 +332,8 @@ class MetaMopApp:
         self._clean_paths(list(self.files))
 
     def _clean_paths(self, paths: list[Path]) -> None:
-        output = Path(self.output_var.get()).expanduser()
-        if not self.output_var.get().strip():
-            messagebox.showerror(APP_NAME, "Choose an output folder first.")
-            return
+        output_text = self.output_var.get().strip()
+        output = Path(output_text).expanduser() if output_text else None
         succeeded, failures = [], []
         for path in paths:
             try:
@@ -339,7 +349,10 @@ class MetaMopApp:
                 failures.append(f"{path.name}: {exc}")
 
         self.status_var.set(f"Cleaned {len(succeeded)} · Failed {len(failures)}")
-        summary = f"Created {len(succeeded)} clean copy/copies in:\n{output}"
+        if output is None:
+            summary = f"Created {len(succeeded)} clean copy/copies beside their original files."
+        else:
+            summary = f"Created {len(succeeded)} clean copy/copies in:\n{output}"
         if failures:
             summary += "\n\nCould not clean:\n" + "\n".join(failures[:8])
             if len(failures) > 8:
