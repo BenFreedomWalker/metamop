@@ -5,8 +5,10 @@ Licensed under the GNU General Public License v3.0 or later.
 """
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
+import tempfile
 import sys
 import tkinter as tk
 from pathlib import Path
@@ -18,7 +20,12 @@ from PIL import Image, ExifTags, UnidentifiedImageError
 APP_NAME = "MetaMop"
 VERSION = "0.1.0"
 ISSUES_URL = "https://github.com/BenFreedomWalker/metamop/issues"
-SUPPORTED = {".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff"}
+IMAGE_FORMATS = {".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff"}
+AUDIO_FORMATS = {".mp3", ".flac", ".wav", ".ogg", ".oga", ".m4a", ".aac", ".wma", ".aiff", ".ape"}
+VIDEO_FORMATS = {".mp4", ".m4v", ".mov", ".avi", ".mkv", ".webm", ".wmv", ".3gp", ".mpg", ".mpeg", ".mts", ".m2ts"}
+PDF_FORMATS = {".pdf"}
+SUPPORTED = IMAGE_FORMATS | AUDIO_FORMATS | VIDEO_FORMATS | PDF_FORMATS
+SUPPORTED_FILTER = "*.jpg *.jpeg *.png *.webp *.tif *.tiff *.mp3 *.flac *.wav *.ogg *.oga *.m4a *.aac *.wma *.aiff *.ape *.mp4 *.m4v *.mov *.avi *.mkv *.webm *.wmv *.3gp *.mpg *.mpeg *.mts *.m2ts *.pdf"
 EXIF_NAMES = ExifTags.TAGS
 
 
@@ -79,6 +86,7 @@ def unique_destination(folder: Path, filename: str) -> Path:
 
 
 EXIFTOOL_URL = "https://exiftool.org/"
+QPDF_URL = "https://qpdf.sourceforge.io/"
 
 
 def find_exiftool() -> str | None:
@@ -98,11 +106,61 @@ def find_exiftool() -> str | None:
     return None
 
 
-def clean_image(source: Path, output_dir: Path | None = None) -> Path:
-    """Remove image metadata with ExifTool without re-encoding image pixels."""
+def find_qpdf() -> str | None:
+    """Find qpdf on PATH or beside the application."""
+    found = shutil.which("qpdf") or shutil.which("qpdf.exe")
+    if found:
+        return found
+    for candidate in (
+        Path(__file__).resolve().with_name("qpdf.exe"),
+        Path(__file__).resolve().with_name("qpdf"),
+        Path(sys.executable).resolve().parent / "qpdf.exe",
+        Path(sys.executable).resolve().parent / "qpdf",
+    ):
+        if candidate.is_file():
+            return str(candidate)
+    return None
+
+
+def inspect_with_exiftool(path: Path) -> list[tuple[str, str]]:
+    """Inspect metadata in audio, video, and PDF files using ExifTool."""
+    exiftool = find_exiftool()
+    if not exiftool:
+        raise FileNotFoundError("ExifTool is required to inspect this file type.")
+    result = subprocess.run(
+        [exiftool, "-j", "-G1", "-s", "-a", str(path)],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError((result.stderr or result.stdout).strip() or "ExifTool could not inspect this file.")
+    try:
+        records = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("ExifTool returned unreadable metadata.") from exc
+    rows: list[tuple[str, str]] = []
+    if records:
+        for key, value in records[0].items():
+            if key != "SourceFile":
+                rows.append((key, readable(value)))
+    stat = path.stat()
+    rows.extend([
+        ("File size", f"{stat.st_size:,} bytes"),
+        ("Modified", __import__("datetime").datetime.fromtimestamp(stat.st_mtime).astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")),
+    ])
+    return rows
+
+
+def inspect_file(path: Path) -> list[tuple[str, str]]:
+    """Inspect metadata using the appropriate reader for the file type."""
+    return inspect_image(path) if path.suffix.lower() in IMAGE_FORMATS else inspect_with_exiftool(path)
+
+
+def clean_file(source: Path, output_dir: Path | None = None) -> Path:
+    """Create a metadata-cleaned copy without re-encoding media streams."""
     suffix = source.suffix.lower()
     if suffix not in SUPPORTED:
-        raise ValueError(f"Unsupported image type: {suffix or '(no extension)'}")
+        raise ValueError(f"Unsupported file type: {suffix or '(no extension)'}")
 
     exiftool = find_exiftool()
     if not exiftool:
@@ -118,35 +176,51 @@ def clean_image(source: Path, output_dir: Path | None = None) -> Path:
         destination_dir, f"{source.stem}_metamop{source.suffix}"
     )
 
-    # Keep ICC/color-space information and orientation so that colors and
-    # automatically rotated photos continue to display correctly. ExifTool
-    # edits metadata in the container; it does not decode/recompress pixels.
-    command = [
-        exiftool,
-        "-all=",
-        "-CommonIFD0=",
-        "--icc_profile:all",
-        "-tagsfromfile", "@",
-        "-colorspacetags",
-        "-orientation",
-        "-o", str(destination),
-        str(source),
-    ]
-    result = subprocess.run(
-        command,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        check=False,
-    )
-    if result.returncode != 0 or not destination.is_file():
-        destination.unlink(missing_ok=True)
-        detail = (result.stderr or result.stdout).strip()
-        raise RuntimeError(detail or "ExifTool could not create the cleaned copy.")
+    # Preserve image color profiles/orientation. For audio and video, remove
+    # container tags directly; streams are not transcoded.
+    if suffix in IMAGE_FORMATS:
+        command = [
+            exiftool, "-all=", "-CommonIFD0=", "--icc_profile:all",
+            "-tagsfromfile", "@", "-colorspacetags", "-orientation",
+            "-o", str(destination), str(source),
+        ]
+    else:
+        command = [exiftool, "-all=", "-o", str(destination), str(source)]
+
+    if suffix in PDF_FORMATS:
+        qpdf = find_qpdf()
+        if not qpdf:
+            raise FileNotFoundError(
+                "PDF cleanup requires qpdf as well as ExifTool. Download qpdf "
+                "from https://qpdf.sourceforge.io/ and put qpdf.exe beside "
+                "metamop.py or add it to PATH."
+            )
+        # ExifTool writes PDF changes incrementally. qpdf rewrites the file
+        # so the previous revision is not left behind in the output.
+        with tempfile.TemporaryDirectory(prefix="metamop_") as temp_dir:
+            intermediate = Path(temp_dir) / "metadata_removed.pdf"
+            command[-3:] = ["-o", str(intermediate), str(source)]
+            result = subprocess.run(command, capture_output=True, text=True,
+                                    encoding="utf-8", errors="replace", check=False)
+            if result.returncode != 0 or not intermediate.is_file():
+                raise RuntimeError((result.stderr or result.stdout).strip() or "ExifTool could not process the PDF.")
+            rewrite = subprocess.run(
+                [qpdf, "--object-streams=generate", str(intermediate), str(destination)],
+                capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
+            )
+            if rewrite.returncode != 0 or not destination.is_file():
+                destination.unlink(missing_ok=True)
+                raise RuntimeError((rewrite.stderr or rewrite.stdout).strip() or "qpdf could not rewrite the PDF.")
+    else:
+        result = subprocess.run(command, capture_output=True, text=True,
+                                encoding="utf-8", errors="replace", check=False)
+        if result.returncode != 0 or not destination.is_file():
+            destination.unlink(missing_ok=True)
+            raise RuntimeError((result.stderr or result.stdout).strip() or "ExifTool could not create the cleaned copy.")
+
     if destination.stat().st_size == 0:
         destination.unlink(missing_ok=True)
-        raise RuntimeError("ExifTool created an empty output file.")
+        raise RuntimeError("The cleaner created an empty output file.")
     return destination
 
 
@@ -180,6 +254,7 @@ class MetaMopApp:
         help_menu = tk.Menu(menu, tearoff=False)
         help_menu.add_command(label="About MetaMop", command=self._about)
         help_menu.add_command(label="Download ExifTool", command=self._open_exiftool)
+        help_menu.add_command(label="Download qpdf (PDF support)", command=self._open_qpdf)
         help_menu.add_command(label="Open issue tracker", command=self._open_issues)
         menu.add_cascade(label="Help", menu=help_menu)
         self.root.config(menu=menu)
@@ -193,7 +268,7 @@ class MetaMopApp:
         ttk.Label(heading, text="MetaMop", style="Title.TLabel").pack(anchor="w")
         ttk.Label(
             heading,
-            text="Inspect image metadata and create clean copies — your originals stay untouched.",
+            text="Inspect and remove metadata from images, audio, video and PDFs — originals stay untouched.",
             style="Muted.TLabel",
         ).pack(anchor="w", pady=(2, 0))
 
@@ -255,14 +330,13 @@ class MetaMopApp:
 
     def add_files(self) -> None:
         chosen = filedialog.askopenfilenames(
-            title="Add images",
-            filetypes=[("Supported images", "*.jpg *.jpeg *.png *.webp *.tif *.tiff"),
-                       ("All files", "*.*")],
+            title="Add files",
+            filetypes=[("Supported files", SUPPORTED_FILTER), ("All files", "*.*")],
         )
         self._add_paths(Path(item) for item in chosen)
 
     def add_folder(self) -> None:
-        folder = filedialog.askdirectory(title="Choose an image folder")
+        folder = filedialog.askdirectory(title="Choose a folder")
         if not folder:
             return
         paths = sorted(
@@ -305,10 +379,10 @@ class MetaMopApp:
         if not path:
             return
         try:
-            metadata = inspect_image(path)
+            metadata = inspect_file(path)
             content = "\n".join(f"{key}\n  {value}" for key, value in metadata)
         except (OSError, UnidentifiedImageError, ValueError) as exc:
-            content = f"Could not read this image.\n\n{exc}"
+            content = f"Could not inspect this file.\n\n{exc}"
         self.details.configure(state="normal")
         self.details.delete("1.0", "end")
         self.details.insert("1.0", content)
@@ -357,7 +431,7 @@ class MetaMopApp:
         failures: list[str] = []
         for path in paths:
             try:
-                destination = clean_image(path, output)
+                destination = clean_file(path, output)
                 succeeded.append((path, destination))
                 before = path.stat().st_size
                 after = destination.stat().st_size
@@ -395,7 +469,7 @@ class MetaMopApp:
     def _about(self) -> None:
         messagebox.showinfo(
             f"About {APP_NAME}",
-            f"{APP_NAME} {VERSION}\n\nA lightweight, offline-first image metadata cleaner.\n\n"
+            f"{APP_NAME} {VERSION}\n\nA lightweight, offline-first metadata cleaner for images, audio, video and PDFs.\n\n"
             "Copyright © 2026 BenFreedomWalker\n"
             "Licensed under GNU GPL-3.0-or-later.\n"
             "No warranty is provided. See LICENSE for details.",
@@ -404,6 +478,10 @@ class MetaMopApp:
     def _open_exiftool(self) -> None:
         import webbrowser
         webbrowser.open(EXIFTOOL_URL)
+
+    def _open_qpdf(self) -> None:
+        import webbrowser
+        webbrowser.open(QPDF_URL)
 
     def _open_issues(self) -> None:
         import webbrowser
