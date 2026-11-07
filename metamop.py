@@ -253,7 +253,7 @@ class MetaMopApp:
 
     def _add_paths(self, paths: Any) -> None:
         added = 0
-        first_added = None
+        added_items = []
         existing = set(self.files)
         for path in paths:
             path = Path(path)
@@ -268,13 +268,12 @@ class MetaMopApp:
                 size, status = "—", "Unavailable"
             item = self.tree.insert("", "end", values=(path.name, path.suffix[1:].upper(), size, status))
             self.rows[item] = path
-            if first_added is None:
-                first_added = item
+            added_items.append(item)
             added += 1
-        if first_added is not None:
-            self.tree.selection_set(first_added)
-            self.tree.focus(first_added)
-            self.tree.see(first_added)
+        if added_items:
+            self.tree.selection_set(*added_items)
+            self.tree.focus(added_items[0])
+            self.tree.see(added_items[0])
             self._show_details()
         self.status_var.set(f"Added {added} file(s) · {len(self.files)} in queue")
 
